@@ -2,7 +2,7 @@
 
 A real-time stock market dashboard with a Bloomberg/trading-terminal aesthetic, powered by live WebSocket data and AI-driven stock analysis.
 
-**Live demo → [stock-market-dashboard-sage.vercel.app](https://stock-market-dashboard-sage.vercel.app)**
+**Live demo → [market-terminal-dashboard.vercel.app](https://market-terminal-dashboard.vercel.app/)**
 
 ![Market Terminal Dashboard](public/screenshot.png)
 
