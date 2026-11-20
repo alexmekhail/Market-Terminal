@@ -11,32 +11,26 @@ class AlpacaSocketManager {
   private lastPrice = new Map<string, number>();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private isAuthenticated = false;
+  private retries = 0;
 
   initialize() {
-    if (typeof window === 'undefined') return;
-    if (
-      this.ws?.readyState === WebSocket.OPEN ||
-      this.ws?.readyState === WebSocket.CONNECTING
-    )
-      return;
+    if (typeof window === 'undefined' || this.reconnectTimer || this.ws) return;
     this.connect();
   }
 
   private connect() {
     const key = process.env.NEXT_PUBLIC_ALPACA_API_KEY;
     const secret = process.env.NEXT_PUBLIC_ALPACA_API_SECRET;
-    if (!key || !secret) {
-      console.warn('[AlpacaSocket] Missing NEXT_PUBLIC_ALPACA_API_KEY / NEXT_PUBLIC_ALPACA_API_SECRET');
-      return;
-    }
+    if (!key || !secret) return;
 
-    this.ws = new WebSocket(WS_URL);
+    const socket = new WebSocket(WS_URL);
+    this.ws = socket;
 
-    this.ws.onopen = () => {
-      this.ws!.send(JSON.stringify({ action: 'auth', key, secret }));
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ action: 'auth', key, secret }));
     };
 
-    this.ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
       try {
         const messages = JSON.parse(event.data as string);
         for (const msg of Array.isArray(messages) ? messages : [messages]) {
@@ -45,38 +39,43 @@ class AlpacaSocketManager {
       } catch {}
     };
 
-    this.ws.onclose = () => {
+    socket.onclose = () => {
+      if (this.ws !== socket) return;
+      this.ws = null;
       this.isAuthenticated = false;
       this.scheduleReconnect();
     };
 
-    this.ws.onerror = () => {
-      this.ws?.close();
+    socket.onerror = () => {
+      socket.close();
     };
   }
 
   private handleMessage(msg: Record<string, unknown>) {
+    if (!msg || typeof msg !== 'object') return;
     if (msg.T === 'success' && msg.msg === 'authenticated') {
       this.isAuthenticated = true;
+      this.retries = 0;
       this.subscribeAll();
       return;
     }
 
     // Trade update
     if (msg.T === 't') {
-      const ticker = msg.S as string;
-      const price = msg.p as number;
+      const ticker = msg.S;
+      const price = msg.p;
+      if (typeof ticker !== 'string' || typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return;
       this.lastPrice.set(ticker, price);
-      this.notify(ticker, price);
+      const update = this.quote(ticker, price);
+      this.callbacks.get(ticker)?.forEach((callback) => callback(update));
     }
   }
 
-  private notify(ticker: string, price: number) {
+  private quote(ticker: string, price: number): QuoteUpdate {
     const prevClose = this.prevClose.get(ticker) ?? price;
     const change = price - prevClose;
     const changePercent = prevClose !== 0 ? (change / prevClose) * 100 : 0;
-    const update: QuoteUpdate = { ticker, price, change, changePercent };
-    this.callbacks.get(ticker)?.forEach((cb) => cb(update));
+    return { ticker, price, change, changePercent };
   }
 
   private subscribeAll() {
@@ -87,11 +86,13 @@ class AlpacaSocketManager {
   }
 
   private scheduleReconnect() {
-    if (this.reconnectTimer) return;
+    if (this.reconnectTimer || this.callbacks.size === 0) return;
+    const delay = Math.min(3000 * 2 ** this.retries, 30_000);
+    this.retries += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect();
-    }, 3000);
+      if (this.callbacks.size > 0) this.initialize();
+    }, delay);
   }
 
   setPrevClose(ticker: string, prevClose: number) {
@@ -103,19 +104,18 @@ class AlpacaSocketManager {
   }
 
   subscribe(ticker: string, callback: Callback) {
-    if (!this.callbacks.has(ticker)) {
+    const isNewTicker = !this.callbacks.has(ticker);
+    if (isNewTicker) {
       this.callbacks.set(ticker, new Set());
     }
     this.callbacks.get(ticker)!.add(callback);
 
     // Emit cached value immediately so UI shows something on mount
     const cached = this.lastPrice.get(ticker);
-    if (cached !== undefined) {
-      this.notify(ticker, cached);
-    }
+    if (cached !== undefined) callback(this.quote(ticker, cached));
 
     if (this.isAuthenticated && this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ action: 'subscribe', trades: [ticker] }));
+      if (isNewTicker) this.ws.send(JSON.stringify({ action: 'subscribe', trades: [ticker] }));
     } else {
       this.initialize();
     }

@@ -13,9 +13,9 @@ function alpacaHeaders(): HeadersInit {
 }
 
 export async function fetchSnapshots(symbols: string[]): Promise<Record<string, Snapshot>> {
-  const joined = symbols.join(',');
+  const params = new URLSearchParams({ symbols: symbols.join(','), feed: 'iex' });
   const res = await fetch(
-    `${DATA_V2}/stocks/snapshots?symbols=${joined}&feed=iex`,
+    `${DATA_V2}/stocks/snapshots?${params}`,
     { headers: alpacaHeaders(), next: { revalidate: 0 } }
   );
   if (!res.ok) throw new Error(`Alpaca snapshots error: ${res.status}`);

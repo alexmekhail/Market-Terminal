@@ -32,11 +32,33 @@ const FALLBACK: InsightResult = {
   summary: 'Unable to generate analysis at this time.',
 };
 
-// In-memory rate limit + result cache (resets on server restart)
-// Add to Vercel env vars: ANTHROPIC_API_KEY (console.anthropic.com)
-const lastCalled = new Map<string, number>();
-const cache = new Map<string, InsightResult>();
-const RATE_LIMIT_MS = 60_000;
+// Per-process cache and concurrency guard. Instances do not share state.
+const cache = new Map<string, { metrics: string; expiresAt: number; result: InsightResult }>();
+const pending = new Set<string>();
+const CACHE_TTL_MS = 60_000;
+const MAX_CACHE_ENTRIES = 256;
+const MAX_PENDING = 8;
+const TICKER_PATTERN = /^[A-Z0-9][A-Z0-9.:-]{0,15}$/;
+const METRICS = ['price', 'changePercent', 'volume', 'open', 'high', 'low', 'prevClose'] as const;
+
+function isInsightRequest(value: unknown): value is InsightRequest {
+  if (!value || typeof value !== 'object') return false;
+  const fields = value as Record<string, unknown>;
+  return typeof fields.ticker === 'string'
+    && TICKER_PATTERN.test(fields.ticker)
+    && METRICS.every((key) => typeof fields[key] === 'number' && Number.isFinite(fields[key]));
+}
+
+function isInsightResult(value: unknown): value is InsightResult {
+  if (!value || typeof value !== 'object') return false;
+  const result = value as Record<string, unknown>;
+  return ['Strong Buy', 'Buy', 'Hold', 'Sell', 'Strong Sell'].some((signal) => signal === result.signal)
+    && ['Bullish', 'Neutral', 'Bearish'].some((sentiment) => sentiment === result.sentiment)
+    && typeof result.confidence === 'number' && result.confidence >= 0 && result.confidence <= 100
+    && Array.isArray(result.reasons) && result.reasons.length === 4
+    && result.reasons.every((reason: unknown) => typeof reason === 'string' && reason.trim().length > 0)
+    && typeof result.summary === 'string' && result.summary.trim().length > 0;
+}
 
 const SYSTEM_PROMPT = `You are a quantitative stock analyst. Given stock metrics, produce a structured JSON analysis.
 Return ONLY valid JSON, no preamble or markdown fences. Schema:
@@ -49,29 +71,39 @@ Return ONLY valid JSON, no preamble or markdown fences. Schema:
 }`;
 
 export async function POST(req: NextRequest) {
-  let body: InsightRequest;
+  let payload: unknown;
   try {
-    body = await req.json();
+    payload = await req.json();
   } catch {
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
   }
 
-  const { ticker } = body;
-  if (!ticker) {
-    return NextResponse.json({ error: 'Missing ticker' }, { status: 400 });
+  if (!isInsightRequest(payload)) {
+    return NextResponse.json({ error: 'Valid ticker and finite stock metrics required' }, { status: 400 });
   }
+  const body = payload;
+  const { ticker } = body;
 
   if (!process.env.ANTHROPIC_API_KEY) {
     return NextResponse.json(FALLBACK);
   }
 
+  const metrics = JSON.stringify(METRICS.map((metric) => body[metric]));
+  const cached = cache.get(ticker);
   const now = Date.now();
-  const last = lastCalled.get(ticker) ?? 0;
-  if (now - last < RATE_LIMIT_MS) {
-    const cached = cache.get(ticker);
-    if (cached) return NextResponse.json(cached);
+  if (cached && cached.expiresAt > now) {
+    if (cached.metrics === metrics) return NextResponse.json(cached.result);
+    return NextResponse.json(
+      { error: 'Analysis is cooling down. Try again shortly.' },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil((cached.expiresAt - now) / 1000)) } }
+    );
   }
-  lastCalled.set(ticker, now);
+  if (pending.has(ticker) || pending.size >= MAX_PENDING) {
+    return NextResponse.json(
+      { error: 'Analysis is busy. Try again shortly.' },
+      { status: 429, headers: { 'Retry-After': '2' } }
+    );
+  }
 
   const intradayPosition =
     body.high !== body.low
@@ -95,9 +127,11 @@ Previous Close: $${body.prevClose}
 Price vs Open: ${priceVsOpen}
 Intraday Range Position: ${intradayPosition}`;
 
+  pending.add(ticker);
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
+      signal: AbortSignal.timeout(10_000),
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': process.env.ANTHROPIC_API_KEY,
@@ -116,20 +150,24 @@ Intraday Range Position: ${intradayPosition}`;
     }
 
     const data = await res.json();
-    const raw: string = data.content?.[0]?.text ?? '';
+    const raw: unknown = data.content?.[0]?.text;
+    if (typeof raw !== 'string') return NextResponse.json(FALLBACK);
     // Strip markdown code fences if model wraps response despite instructions
     const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
 
-    let result: InsightResult;
-    try {
-      result = JSON.parse(text);
-    } catch {
-      return NextResponse.json(FALLBACK);
-    }
+    const result: unknown = JSON.parse(text);
+    if (!isInsightResult(result)) return NextResponse.json(FALLBACK);
 
-    cache.set(ticker, result);
+    cache.delete(ticker);
+    if (cache.size >= MAX_CACHE_ENTRIES) {
+      const oldest = cache.keys().next().value;
+      if (oldest !== undefined) cache.delete(oldest);
+    }
+    cache.set(ticker, { metrics, expiresAt: Date.now() + CACHE_TTL_MS, result });
     return NextResponse.json(result);
   } catch {
     return NextResponse.json(FALLBACK);
+  } finally {
+    pending.delete(ticker);
   }
 }

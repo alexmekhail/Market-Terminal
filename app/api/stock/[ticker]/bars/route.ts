@@ -26,9 +26,10 @@ function getRangeParams(range: TimeRange): { timeframe: string; start: string; e
 
 export async function GET(
   req: NextRequest,
-  { params }: { params: { ticker: string } }
+  { params }: { params: Promise<{ ticker: string }> }
 ) {
-  const ticker = params.ticker.toUpperCase();
+  const { ticker: symbol } = await params;
+  const ticker = symbol.toUpperCase();
   const range = (req.nextUrl.searchParams.get('range') ?? '1D') as TimeRange;
 
   try {
