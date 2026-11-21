@@ -1,9 +1,12 @@
 'use client';
 
+import { useMarketPolling } from '@/lib/use-market-polling';
+import { QuoteStatus } from '@/components/QuoteStatus';
+
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from './AuthProvider';
-import type { WatchlistItem, Snapshot } from '@/types';
+import type { WatchlistItem } from '@/types';
 import { formatPrice, formatChangePercent, isPositiveChange } from '@/lib/utils';
 import { Skeleton } from './Skeleton';
 
@@ -14,12 +17,10 @@ export function Watchlist() {
 
 function WatchlistContent({ userId }: { userId?: string }) {
   const [items, setItems] = useState<WatchlistItem[]>([]);
-  const [prices, setPrices] = useState<Record<string, Snapshot>>({});
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     setItems([]);
-    setPrices({});
     setLoading(Boolean(userId));
     if (!userId) return;
     const controller = new AbortController();
@@ -33,13 +34,6 @@ function WatchlistContent({ userId }: { userId?: string }) {
         const list: WatchlistItem[] = data.watchlist ?? [];
         if (signal.aborted) return;
         setItems(list);
-        if (!list.length) return;
-        const symbols = new URLSearchParams({ symbols: list.map((item) => item.ticker).join(',') });
-        const snapshots = await fetch(`/api/snapshots?${symbols}`, { signal });
-        if (snapshots.ok) {
-          const quotes = await snapshots.json();
-          if (!signal.aborted) setPrices(quotes);
-        }
       } catch (error) {
         if (!signal.aborted) console.error(error);
       } finally {
@@ -50,6 +44,9 @@ function WatchlistContent({ userId }: { userId?: string }) {
     void load();
     return () => controller.abort();
   }, [userId]);
+
+  const polling = useMarketPolling(userId ? items.map((item) => item.ticker) : []);
+  const { quotes: prices } = polling;
 
   async function removeFromWatchlist(ticker: string) {
     const response = await fetch(`/api/watchlist?ticker=${encodeURIComponent(ticker)}`, { method: 'DELETE' });

@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useMarketPolling } from '@/lib/use-market-polling';
+import { QuoteStatus } from '@/components/QuoteStatus';
+
 import Link from 'next/link';
-import type { Snapshot } from '@/types';
 import { formatPrice, formatChangePercent, isPositiveChange } from '@/lib/utils';
 import { Skeleton } from './Skeleton';
 
@@ -24,18 +25,8 @@ const SECTORS = [
 const ALL_SYMBOLS = [...INDICES.map((i) => i.id), ...SECTORS.map((s) => s.id)];
 
 export function MarketOverview() {
-  const [data, setData] = useState<Record<string, Snapshot>>({});
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    fetch(`/api/snapshots?symbols=${ALL_SYMBOLS.join(',')}`, { signal: controller.signal })
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Snapshots unavailable')))
-      .then((snapshots) => { if (!controller.signal.aborted) setData(snapshots); })
-      .catch((error) => { if (!controller.signal.aborted) console.error(error); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, []);
+  const polling = useMarketPolling(ALL_SYMBOLS);
+  const { quotes: data, loading } = polling;
 
   return (
     <div className="border border-border rounded overflow-hidden h-full">
@@ -43,6 +34,7 @@ export function MarketOverview() {
         <span className="text-xs font-mono font-semibold text-text-secondary uppercase tracking-wider">
           Market Overview
         </span>
+        <div><QuoteStatus state={polling} /></div>
       </div>
 
       <div className="p-3 space-y-1">

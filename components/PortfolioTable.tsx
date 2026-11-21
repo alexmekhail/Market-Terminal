@@ -1,18 +1,15 @@
 'use client';
 
+import { useMarketPolling } from '@/lib/use-market-polling';
+import { QuoteStatus } from '@/components/QuoteStatus';
+
 import { useEffect, useState } from 'react';
 import { useAuth } from './AuthProvider';
 import { AddPositionModal } from './AddPositionModal';
-import type { PortfolioPosition, Snapshot } from '@/types';
+import type { PortfolioPosition } from '@/types';
+import { valuePosition } from '@/lib/portfolio-valuation';
 import { formatPrice, formatLargeNumber, isPositiveChange } from '@/lib/utils';
 import { Skeleton } from './Skeleton';
-
-interface EnrichedPosition extends PortfolioPosition {
-  currentPrice?: number;
-  currentValue?: number;
-  gainLoss?: number;
-  gainLossPercent?: number;
-}
 
 export function PortfolioTable() {
   const { user } = useAuth();
@@ -20,15 +17,13 @@ export function PortfolioTable() {
 }
 
 function PortfolioTableContent({ userId }: { userId?: string }) {
-  const [positions, setPositions] = useState<EnrichedPosition[]>([]);
-  const [prices, setPrices] = useState<Record<string, Snapshot>>({});
+  const [positions, setPositions] = useState<PortfolioPosition[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
     setPositions([]);
-    setPrices({});
     setLoading(Boolean(userId));
     if (!userId) return;
     const controller = new AbortController();
@@ -42,13 +37,6 @@ function PortfolioTableContent({ userId }: { userId?: string }) {
         const list: PortfolioPosition[] = data.positions ?? [];
         if (signal.aborted) return;
         setPositions(list);
-        if (!list.length) return;
-        const symbols = new URLSearchParams({ symbols: list.map((item) => item.ticker).join(',') });
-        const snapshots = await fetch(`/api/snapshots?${symbols}`, { signal });
-        if (snapshots.ok) {
-          const quotes = await snapshots.json();
-          if (!signal.aborted) setPrices(quotes);
-        }
       } catch (error) {
         if (!signal.aborted) console.error(error);
       } finally {
@@ -60,21 +48,15 @@ function PortfolioTableContent({ userId }: { userId?: string }) {
     return () => controller.abort();
   }, [userId, refresh]);
 
+  const polling = useMarketPolling(userId ? positions.map((item) => item.ticker) : []);
+  const { quotes: prices } = polling;
+
   async function deletePosition(id: string) {
     const response = await fetch(`/api/portfolio?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (response.ok) setPositions((previous) => previous.filter((position) => position.id !== id));
   }
 
-  // Enrich positions with snapshot prices
-  const enriched: EnrichedPosition[] = positions.map((pos) => {
-    const currentPrice = prices[pos.ticker]?.price;
-    if (currentPrice === undefined) return pos;
-    const currentValue = currentPrice * pos.shares;
-    const costBasis = pos.avg_buy_price * pos.shares;
-    const gainLoss = currentValue - costBasis;
-    const gainLossPercent = costBasis !== 0 ? (gainLoss / costBasis) * 100 : 0;
-    return { ...pos, currentPrice, currentValue, gainLoss, gainLossPercent };
-  });
+  const enriched = positions.map((position) => valuePosition(position, prices[position.ticker]?.price));
 
   const totalValue = enriched.reduce((sum, p) => sum + (p.currentValue ?? 0), 0);
   const totalGainLoss = enriched.reduce((sum, p) => sum + (p.gainLoss ?? 0), 0);
@@ -92,6 +74,7 @@ function PortfolioTableContent({ userId }: { userId?: string }) {
       <div className="border border-border rounded overflow-hidden">
         <div className="px-4 py-2.5 border-b border-border bg-bg-tertiary flex items-center justify-between">
           <span className="text-xs font-mono font-semibold text-text-secondary uppercase tracking-wider">Portfolio</span>
+          {positions.length > 0 && <QuoteStatus state={polling} />}
           <div className="flex items-center gap-4">
             {totalValue > 0 && (
               <div className="flex items-center gap-3 font-mono text-xs">

@@ -1,8 +1,10 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useMarketPolling } from '@/lib/use-market-polling';
+import { QuoteStatus } from '@/components/QuoteStatus';
+
+import { useEffect, useMemo, useState, useRef } from 'react';
 import Link from 'next/link';
-import type { Snapshot } from '@/types';
 import { formatPrice } from '@/lib/utils';
 
 /* ─── types ───────────────────────────────────────────────────────────────── */
@@ -271,8 +273,8 @@ interface TooltipPos { id: string; cx: number; cy: number }
 export function StockHeatmap() {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const [canvasW,  setCanvasW]  = useState(0);
-  const [snaps,    setSnaps]    = useState<Record<string, Snapshot>>({});
-  const [loading,  setLoading]  = useState(true);
+  const polling = useMarketPolling(ALL_TICKERS);
+  const { quotes: snaps, loading } = polling;
   const [tooltip,  setTooltip]  = useState<TooltipPos | null>(null);
 
   useEffect(() => {
@@ -283,15 +285,7 @@ export function StockHeatmap() {
     return () => ro.disconnect();
   }, []);
 
-  useEffect(() => {
-    fetch(`/api/snapshots?symbols=${ALL_TICKERS.join(',')}`)
-      .then(r => r.json())
-      .then((d: Record<string, Snapshot>) => setSnaps(d))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
-
-  const layout     = canvasW > 0 ? buildLayout(canvasW, CANVAS_H) : [];
+  const layout = useMemo(() => canvasW > 0 ? buildLayout(canvasW, CANVAS_H) : [], [canvasW]);
   const hoverSnap  = tooltip ? snaps[tooltip.id] : null;
 
   return (
@@ -301,6 +295,7 @@ export function StockHeatmap() {
         <span className="text-xs font-mono font-semibold text-text-secondary uppercase tracking-wider">
           Market Heatmap
         </span>
+        <QuoteStatus state={polling} />
         <span className="text-xs font-mono text-text-muted">
           Sector size = Market Cap · Color = Daily % Change
         </span>
@@ -339,8 +334,8 @@ export function StockHeatmap() {
             {sector.tiles.map(tile => {
               const snap = snaps[tile.id];
               const pct  = snap?.changePercent ?? 0;
-              const bg   = loading ? '#181820' : tileBg(pct);
-              const fg   = loading ? '#444'    : tileFg(pct);
+              const bg   = !snap ? '#181820' : tileBg(pct);
+              const fg   = !snap ? '#777'    : tileFg(pct);
 
               const showLogo  = tile.w >= 58 && tile.h >= 50;
               const logoSz    = Math.min(Math.floor(Math.min(tile.w, tile.h) * 0.34), 38);

@@ -12,7 +12,7 @@ Market Terminal is a web dashboard for following equities and selected USD crypt
 - **Instrument details.** Stock and crypto charts with 1D, 1W, and 1M ranges. Equity details include price and volume statistics, ticker-specific news, and optional Claude analysis.
 - **Symbol search.** Find instruments by symbol or name within the bundled universe of stocks, ETFs, and crypto pairs.
 - **Watchlist and portfolio.** Sign in with email and password to add or remove watchlist symbols and record, edit, or remove positions. The portfolio computes unrealized profit and loss from tracked prices and user-entered cost basis.
-- **Market data.** Alpaca REST provides equity and crypto snapshots and historical bars. Equity widgets show a snapshot fetched when the view or instrument loads.
+- **Market data.** Alpaca REST provides equity and crypto snapshots and historical bars. Quote widgets refresh automatically while the tab is visible.
 
 ## Tech stack
 
@@ -23,7 +23,7 @@ Market Terminal is a web dashboard for following equities and selected USD crypt
 | Alpaca Market Data | REST snapshots, historical bars, and news |
 | Supabase Auth and PostgreSQL | Email/password sessions and per-user watchlist and portfolio storage |
 | Anthropic Claude | Optional structured stock analysis |
-| Vercel and GitHub Actions | Hosting and a workflow that type-checks pull requests and builds and deploys pushes to main |
+| Vercel and GitHub Actions | Hosting and a workflow that type-checks and tests pull requests and builds and deploys pushes to main |
 
 ## Architecture
 
@@ -80,13 +80,21 @@ Preview deployments can build without Supabase credentials. Configure the public
 - Watchlist and portfolio queries filter by the verified user's ID, and writes derive row ownership from that identity. The protected routes return `401` when session verification fails and `503` when Supabase is unconfigured. The SQL policies also enforce ownership at the database.
 - AI Insights allows up to 60 provider attempts per minute and eight in flight per application instance. Matching cached results can still be served when the provider quota is exhausted. Instances and cold starts have independent budgets, so these limits provide no account-wide spending guarantee. A coordinated limit would require a shared store such as Redis, provider spend limits, and a policy for caller quotas and server-sourced metrics.
 
-## Streaming and deployment limits
+## Quote polling and freshness
 
-The application uses REST snapshots. It has no browser connection to Alpaca, and quote widgets refresh when loaded. A future streaming option would use a long-lived relay with one upstream connection per feed and keep provider credentials on that service. The relay could fan out normalized quotes over authenticated SSE or WebSockets, enforce subscription limits, and perform upstream reconnects with jitter, resubscription, and offline handling. That design needs hosting and authorization decisions before implementation.
+Mounted quote widgets share a browser poller for each asset class. Each poller deduplicates symbols, sorts them to make the requests cacheable, and requests up to 200 symbols at a time. It waits for the current batch cycle to finish before scheduling the next one, normally after 30 seconds. The interval is set in [`lib/market-data-config.ts`](lib/market-data-config.ts). Polling pauses in hidden tabs, resumes when visible, and tears down its listeners and timers when the last subscriber leaves. Historical bars, news, and search results still load on demand.
+
+The snapshot API calls Alpaca with server-side credentials. It coalesces identical in-flight requests in each server instance and allows shared HTTP caches to reuse successful batches for 15 seconds. Polling replaced the direct browser WebSocket so Alpaca credentials stay out of client bundles.
+
+- **Current snapshot** means both the fetch and the provider trade or bar timestamp are less than 90 seconds old.
+- **Delayed** means the fetch was recent and the provider timestamp is older, which can happen outside market hours or on an inactive symbol. This label describes quote age and carries no feed latency guarantee.
+- **Stale** means the latest refresh failed or omitted a previously valid quote, or the last successful snapshot is at least 90 seconds old. The UI retains the last valid value. Where Alpaca supplies no usable market timestamp, the UI shows the snapshot time and indicates that market time is unavailable.
+
+The pollers honor `Retry-After` and use exponential backoff with jitter, capped at five minutes for transient errors. A provider-supplied retry time can extend that pause. The server also uses Alpaca's quota-reset header when available, and polling for an asset class stops after a permanent authentication or configuration failure until the page reloads. Alpaca quotas depend on the account and feed. The cache, batch limits, and per-instance cooldown reduce pressure, and an account-wide limit would require coordination across server instances. [Alpaca snapshot API](https://docs.alpaca.markets/us/reference/stocksnapshots-1)
 
 ## Engineering challenges
 
-- **Snapshot lifecycle.** Batched REST requests supply quote widgets. Effects cancel outdated requests on navigation or account changes.
+- **Snapshot lifecycle.** A shared poller supplies quote widgets and cancels requests when views stop needing them. Portfolio valuation recomputes from snapshots while saved positions continue to come from Supabase.
 - **Market data presentation.** The treemap groups curated symbols by sector and separates tile sizing from return-based coloring. The chart layer transforms historical data into time-ordered price series, and the equity 1D view selects the most recent day represented in the returned bars.
 - **Provider cost and latency.** News requests use a five-minute revalidation window. The AI panel starts when price data becomes available and supports manual refresh. The route applies a response timeout and falls back when the provider fails or returns an invalid result.
 
@@ -100,7 +108,7 @@ npm run build
 npm audit
 ```
 
-The Node tests exercise route handlers with mocked Supabase and Anthropic responses. They cover session rejection, user scoping, malformed input, AI cooldown and cache expiry, concurrent duplicate requests, and provider fallback.
+The Node tests exercise route handlers with mocked Supabase and Anthropic responses. They cover session rejection, user scoping, malformed input, AI cooldown and cache expiry, concurrent duplicate requests, and provider fallback. Deterministic timer tests also cover polling cadence, batching, tab visibility, cancellation, rate-limit recovery, stale quotes, and portfolio valuation.
 
 To run the database policy fixture, use a fresh disposable PostgreSQL database with a role that can create schemas and roles. The script applies the repository schema, exercises row-level security with two synthetic identities, and rolls back.
 

@@ -1,5 +1,7 @@
 export interface Snapshot {
   ticker: string;
+  marketTime: number | null;
+  fetchedAt: number;
   price: number;
   prevClose: number;
   change: number;
