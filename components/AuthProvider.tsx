@@ -29,6 +29,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const supabase = createClient();
 
   useEffect(() => {
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
       setUser(session?.user ?? null);
@@ -42,20 +46,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     });
 
     return () => subscription.unsubscribe();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [supabase]);
 
   const signIn = useCallback(async (email: string, password: string) => {
+    if (!supabase) return { error: 'Authentication is unavailable in this environment.' };
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     return { error: error?.message ?? null };
   }, [supabase]);
 
   const signUp = useCallback(async (email: string, password: string) => {
+    if (!supabase) return { error: 'Authentication is unavailable in this environment.' };
     const { error } = await supabase.auth.signUp({ email, password });
     return { error: error?.message ?? null };
   }, [supabase]);
 
   const signOut = useCallback(async () => {
-    await supabase.auth.signOut();
+    await supabase?.auth.signOut();
   }, [supabase]);
 
   return (

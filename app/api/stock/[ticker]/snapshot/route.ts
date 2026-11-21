@@ -3,9 +3,10 @@ import { fetchSnapshots } from '@/lib/alpaca';
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: { ticker: string } }
+  { params }: { params: Promise<{ ticker: string }> }
 ) {
-  const ticker = params.ticker.toUpperCase();
+  const { ticker: symbol } = await params;
+  const ticker = symbol.toUpperCase();
   try {
     const data = await fetchSnapshots([ticker]);
     const snapshot = data[ticker] ?? null;

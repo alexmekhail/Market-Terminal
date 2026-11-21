@@ -134,7 +134,7 @@ export function PortfolioTable() {
 
         {!loading && enriched.length === 0 && (
           <div className="p-6 text-text-muted text-xs font-mono text-center">
-            No positions yet. Click "+ Add" to add your first holding.
+            No positions yet. Click &quot;+ Add&quot; to add your first holding.
           </div>
         )}
 

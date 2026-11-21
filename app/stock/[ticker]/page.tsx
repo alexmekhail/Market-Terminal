@@ -191,8 +191,9 @@ export default function StockPage() {
         </div>
         <div className="col-span-2 overflow-y-auto">
           <StockInsights
+            key={ticker}
             ticker={ticker}
-            stockData={snapshot ? {
+            stockData={snapshot?.ticker === ticker ? {
               price: snapshot.price,
               changePercent: snapshot.changePercent,
               volume: snapshot.volume,

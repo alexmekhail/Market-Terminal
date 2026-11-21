@@ -1,9 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   images: {
-    remotePatterns: [
-      { protocol: 'https', hostname: '**' },
-    ],
+    // The dashboard has no next/image consumers and does not need the optimizer.
+    unoptimized: true,
   },
 };
 

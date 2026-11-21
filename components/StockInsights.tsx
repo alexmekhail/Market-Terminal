@@ -101,11 +101,12 @@ export function StockInsights({ ticker, stockData }: StockInsightsProps) {
   }, [ticker]);
 
   // Trigger fetch once real snapshot data arrives
+  const hasPrice = stockData !== null && stockData.price > 0;
   useEffect(() => {
-    if (stockData && stockData.price > 0) {
+    if (hasPrice) {
       fetchInsights();
     }
-  }, [ticker, stockData?.price, fetchInsights]);
+  }, [hasPrice, fetchInsights]);
 
   const cfg = result ? SIGNAL_CONFIG[result.signal] : null;
 
