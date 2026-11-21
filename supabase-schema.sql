@@ -50,7 +50,8 @@ create policy "insert own portfolio"
 
 create policy "update own portfolio"
   on portfolio for update
-  using (auth.uid() = user_id);
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 
 create policy "delete own portfolio"
   on portfolio for delete

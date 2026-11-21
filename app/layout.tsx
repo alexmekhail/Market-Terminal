@@ -20,7 +20,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: 'Market Terminal',
-  description: 'Real-time stock market dashboard with live prices, charts, watchlist and portfolio tracking.',
+  description: 'Stock market dashboard with quote snapshots, charts, watchlist and portfolio tracking.',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

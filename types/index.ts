@@ -1,10 +1,3 @@
-export interface QuoteUpdate {
-  ticker: string;
-  price: number;
-  change: number;
-  changePercent: number;
-}
-
 export interface Snapshot {
   ticker: string;
   price: number;

@@ -1,85 +1,63 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from './AuthProvider';
-import { alpacaSocket } from '@/lib/alpacaSocket';
-import type { WatchlistItem, QuoteUpdate, Snapshot } from '@/types';
+import type { WatchlistItem, Snapshot } from '@/types';
 import { formatPrice, formatChangePercent, isPositiveChange } from '@/lib/utils';
 import { Skeleton } from './Skeleton';
 
-interface LivePrice {
-  price: number;
-  change: number;
-  changePercent: number;
-}
-
 export function Watchlist() {
   const { user } = useAuth();
+  return <WatchlistContent key={user?.id ?? 'anonymous'} userId={user?.id} />;
+}
+
+function WatchlistContent({ userId }: { userId?: string }) {
   const [items, setItems] = useState<WatchlistItem[]>([]);
-  const [prices, setPrices] = useState<Record<string, LivePrice>>({});
+  const [prices, setPrices] = useState<Record<string, Snapshot>>({});
   const [loading, setLoading] = useState(true);
-  const callbacksRef = useRef<Map<string, (u: QuoteUpdate) => void>>(new Map());
-
-  const subscribeToTickers = useCallback((tickers: string[]) => {
-    // Unsubscribe existing
-    callbacksRef.current.forEach((cb, t) => alpacaSocket.unsubscribe(t, cb));
-    callbacksRef.current.clear();
-
-    // Fetch snapshots for prevClose
-    if (tickers.length > 0) {
-      fetch(`/api/snapshots?symbols=${tickers.join(',')}`)
-        .then((r) => r.json())
-        .then((data: Record<string, Snapshot>) => {
-          const initial: Record<string, LivePrice> = {};
-          for (const [ticker, snap] of Object.entries(data)) {
-            initial[ticker] = { price: snap.price, change: snap.change, changePercent: snap.changePercent };
-            alpacaSocket.setPrevClose(ticker, snap.prevClose);
-          }
-          setPrices((prev) => ({ ...prev, ...initial }));
-        })
-        .catch(console.error);
-    }
-
-    tickers.forEach((ticker) => {
-      const cb = (update: QuoteUpdate) => {
-        setPrices((prev) => ({
-          ...prev,
-          [ticker]: { price: update.price, change: update.change, changePercent: update.changePercent },
-        }));
-      };
-      callbacksRef.current.set(ticker, cb);
-      alpacaSocket.subscribe(ticker, cb);
-    });
-  }, []);
 
   useEffect(() => {
-    if (!user) { setLoading(false); return; }
+    setItems([]);
+    setPrices({});
+    setLoading(Boolean(userId));
+    if (!userId) return;
+    const controller = new AbortController();
+    const { signal } = controller;
 
-    fetch('/api/watchlist')
-      .then((r) => r.json())
-      .then((d) => {
-        const list: WatchlistItem[] = d.watchlist ?? [];
+    async function load() {
+      try {
+        const response = await fetch('/api/watchlist', { signal });
+        if (!response.ok) return;
+        const data = await response.json();
+        const list: WatchlistItem[] = data.watchlist ?? [];
+        if (signal.aborted) return;
         setItems(list);
-        subscribeToTickers(list.map((i) => i.ticker));
-      })
-      .catch(console.error)
-      .finally(() => setLoading(false));
+        if (!list.length) return;
+        const symbols = new URLSearchParams({ symbols: list.map((item) => item.ticker).join(',') });
+        const snapshots = await fetch(`/api/snapshots?${symbols}`, { signal });
+        if (snapshots.ok) {
+          const quotes = await snapshots.json();
+          if (!signal.aborted) setPrices(quotes);
+        }
+      } catch (error) {
+        if (!signal.aborted) console.error(error);
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
+    }
 
-    return () => {
-      callbacksRef.current.forEach((cb, t) => alpacaSocket.unsubscribe(t, cb));
-      callbacksRef.current.clear();
-    };
-  }, [user, subscribeToTickers]);
+    void load();
+    return () => controller.abort();
+  }, [userId]);
 
   async function removeFromWatchlist(ticker: string) {
-    await fetch(`/api/watchlist?ticker=${ticker}`, { method: 'DELETE' });
-    setItems((prev) => prev.filter((i) => i.ticker !== ticker));
-    const cb = callbacksRef.current.get(ticker);
-    if (cb) { alpacaSocket.unsubscribe(ticker, cb); callbacksRef.current.delete(ticker); }
+    const response = await fetch(`/api/watchlist?ticker=${encodeURIComponent(ticker)}`, { method: 'DELETE' });
+    if (!response.ok) return;
+    setItems((previous) => previous.filter((item) => item.ticker !== ticker));
   }
 
-  if (!user) {
+  if (!userId) {
     return (
       <div className="border border-border rounded p-4 text-center">
         <p className="text-text-muted text-xs font-mono">Sign in to view your watchlist</p>
