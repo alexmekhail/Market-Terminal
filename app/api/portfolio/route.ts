@@ -3,6 +3,7 @@ import { createServerSupabase } from '@/lib/supabase-server';
 
 export async function GET() {
   const supabase = await createServerSupabase();
+  if (!supabase) return NextResponse.json({ error: 'Authentication unavailable' }, { status: 503 });
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -17,6 +18,7 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   const supabase = await createServerSupabase();
+  if (!supabase) return NextResponse.json({ error: 'Authentication unavailable' }, { status: 503 });
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -40,6 +42,7 @@ export async function POST(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   const supabase = await createServerSupabase();
+  if (!supabase) return NextResponse.json({ error: 'Authentication unavailable' }, { status: 503 });
   const { data: { user } } = await supabase.auth.getUser();
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 

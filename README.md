@@ -75,6 +75,8 @@ Configure `.env.local` using the checked-in [template](.env.local.example).
 
 ## Security
 
+Preview deployments can build without Supabase credentials. Configure the public Supabase settings for the preview environment to enable account features.
+
 - REST credentials and the Anthropic key belong in server-only environment variables. Store local values in the ignored `.env.local` file and configure hosted values through your deployment environment.
 - The watchlist and portfolio APIs verify the current user with Supabase Auth. Row-level security restricts access to rows owned by that user. The application uses the Supabase anon key with the user's session.
 - **Direct Alpaca streaming exposes the configured key and secret to every browser.** Use the REST-only configuration for public deployments until streaming credentials can be held server-side. Treat any credential previously shipped in a public build as exposed and rotate it through Alpaca. Changes to public environment variables require a new build.
