@@ -1,10 +1,13 @@
 'use client';
 
+import { useMarketPolling } from '@/lib/use-market-polling';
+import { QuoteStatus } from '@/components/QuoteStatus';
+
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/components/AuthProvider';
 import { StockDetailPanel } from '@/components/StockDetailPanel';
-import type { WatchlistItem, Snapshot } from '@/types';
+import type { WatchlistItem } from '@/types';
 import { formatPrice, formatChangePercent, isPositiveChange } from '@/lib/utils';
 import { Skeleton } from '@/components/Skeleton';
 
@@ -15,13 +18,11 @@ export default function WatchlistPage() {
 
 function WatchlistPageContent({ userId }: { userId?: string }) {
   const [items, setItems] = useState<WatchlistItem[]>([]);
-  const [prices, setPrices] = useState<Record<string, Snapshot>>({});
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
 
   useEffect(() => {
     setItems([]);
-    setPrices({});
     setLoading(Boolean(userId));
     if (!userId) return;
     const controller = new AbortController();
@@ -36,13 +37,6 @@ function WatchlistPageContent({ userId }: { userId?: string }) {
         if (signal.aborted) return;
         setItems(list);
         setSelected(list[0]?.ticker ?? null);
-        if (!list.length) return;
-        const symbols = new URLSearchParams({ symbols: list.map((item) => item.ticker).join(',') });
-        const snapshots = await fetch(`/api/snapshots?${symbols}`, { signal });
-        if (snapshots.ok) {
-          const quotes = await snapshots.json();
-          if (!signal.aborted) setPrices(quotes);
-        }
       } catch (error) {
         if (!signal.aborted) console.error(error);
       } finally {
@@ -53,6 +47,9 @@ function WatchlistPageContent({ userId }: { userId?: string }) {
     void load();
     return () => controller.abort();
   }, [userId]);
+
+  const polling = useMarketPolling(userId ? items.map((item) => item.ticker) : []);
+  const { quotes: prices } = polling;
 
   async function removeFromWatchlist(ticker: string) {
     const response = await fetch(`/api/watchlist?ticker=${encodeURIComponent(ticker)}`, { method: 'DELETE' });
@@ -100,6 +97,7 @@ function WatchlistPageContent({ userId }: { userId?: string }) {
 
   return (
     <div className="max-w-screen-xl mx-auto px-4 py-6">
+      <div className="mb-2"><QuoteStatus state={polling} /></div>
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         {/* Watchlist sidebar */}
         <div className="xl:col-span-1">

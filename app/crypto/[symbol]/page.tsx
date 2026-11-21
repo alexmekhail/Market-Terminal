@@ -1,11 +1,14 @@
 'use client';
 
+import { useMarketPolling } from '@/lib/use-market-polling';
+import { QuoteStatus } from '@/components/QuoteStatus';
+
 import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { StockChart } from '@/components/StockChart';
 import { PriceDisplay } from '@/components/PriceDisplay';
 import { Skeleton } from '@/components/Skeleton';
-import type { Snapshot, ChartDataPoint, TimeRange } from '@/types';
+import type { ChartDataPoint, TimeRange } from '@/types';
 import { isPositiveChange, formatVolume, formatPrice } from '@/lib/utils';
 import { alpacaBarToChartPoint } from '@/lib/utils';
 import { CRYPTO_TICKERS } from '@/lib/tickers';
@@ -29,30 +32,29 @@ function getRangeParams(range: TimeRange): { timeframe: string; start: string; e
 
 export default function CryptoPage() {
   const params = useParams();
-  const symbol = (params.symbol as string).toUpperCase();
+  const symbol = (params.symbol as string).toUpperCase().replace(/\/USD$/, '');
+  return <InstrumentContent key={symbol} symbol={symbol} />;
+}
+
+function InstrumentContent({ symbol }: { symbol: string }) {
   const cryptoInfo = CRYPTO_TICKERS.find((c) => c.symbol === symbol);
 
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [chartLoading, setChartLoading] = useState(true);
-  const [snapshotLoading, setSnapshotLoading] = useState(true);
   const [range, setRange] = useState<TimeRange>('1D');
 
-  useEffect(() => {
-    setSnapshotLoading(true);
-    fetch(`/api/crypto/snapshots?symbols=${symbol}`)
-      .then((r) => r.json())
-      .then((d) => { if (d[symbol]) setSnapshot(d[symbol]); })
-      .catch(console.error)
-      .finally(() => setSnapshotLoading(false));
-  }, [symbol]);
+  const polling = useMarketPolling([symbol], 'crypto');
+  const snapshot = polling.quotes[symbol];
+  const snapshotLoading = polling.loading;
 
   useEffect(() => {
+    const controller = new AbortController();
     setChartLoading(true);
     const { timeframe, start, end } = getRangeParams(range);
-    fetch(`/api/crypto/bars?symbol=${symbol}&timeframe=${timeframe}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`)
+    fetch(`/api/crypto/bars?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&start=${encodeURIComponent(start)}&end=${encodeURIComponent(end)}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((d) => {
+        if (controller.signal.aborted) return;
         const points: ChartDataPoint[] = (d.bars ?? [])
           .map(alpacaBarToChartPoint)
           .sort((a: ChartDataPoint, b: ChartDataPoint) => a.time - b.time);
@@ -65,8 +67,9 @@ export default function CryptoPage() {
           setChartData(points);
         }
       })
-      .catch(console.error)
-      .finally(() => setChartLoading(false));
+      .catch((error) => { if (!controller.signal.aborted) console.error(error); })
+      .finally(() => { if (!controller.signal.aborted) setChartLoading(false); });
+    return () => controller.abort();
   }, [symbol, range]);
 
   const positive = snapshot ? isPositiveChange(snapshot.change) : true;
@@ -85,6 +88,7 @@ export default function CryptoPage() {
           {cryptoInfo && (
             <p className="text-text-muted font-sans text-sm mb-2">{cryptoInfo.name} · USD</p>
           )}
+          <div className="mb-1"><QuoteStatus state={polling} /></div>
           {snapshotLoading ? (
             <Skeleton className="h-8 w-48" />
           ) : snapshot ? (

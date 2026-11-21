@@ -1,5 +1,8 @@
 'use client';
 
+import { useMarketPolling } from '@/lib/use-market-polling';
+import { QuoteStatus } from '@/components/QuoteStatus';
+
 import { useEffect, useState } from 'react';
 import { StockChart } from '@/components/StockChart';
 import { NewsPanel } from '@/components/NewsPanel';
@@ -7,7 +10,7 @@ import { PriceDisplay } from '@/components/PriceDisplay';
 import { StockInsights } from '@/components/StockInsights';
 import { Skeleton } from '@/components/Skeleton';
 import { useAuth } from '@/components/AuthProvider';
-import type { Snapshot, ChartDataPoint, TimeRange } from '@/types';
+import type { ChartDataPoint, TimeRange } from '@/types';
 import { isPositiveChange, formatVolume, formatPrice } from '@/lib/utils';
 import Link from 'next/link';
 
@@ -18,31 +21,20 @@ interface Props {
 }
 
 export function StockDetailPanel({ ticker }: Props) {
+  return <StockDetailContent key={ticker} ticker={ticker} />;
+}
+
+function StockDetailContent({ ticker }: Props) {
   const { user } = useAuth();
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [chartLoading, setChartLoading] = useState(true);
   const [range, setRange] = useState<TimeRange>('1D');
-  const [snapshotLoading, setSnapshotLoading] = useState(true);
   const [inWatchlist, setInWatchlist] = useState(false);
   const [watchlistLoading, setWatchlistLoading] = useState(false);
 
-  // Reset state when ticker changes
-  useEffect(() => {
-    setChartData([]);
-  }, [ticker]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    setSnapshot(null);
-    setSnapshotLoading(true);
-    fetch(`/api/stock/${encodeURIComponent(ticker)}/snapshot`, { signal: controller.signal })
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Snapshot unavailable')))
-      .then((data) => { if (!controller.signal.aborted) setSnapshot(data.snapshot ?? null); })
-      .catch((error) => { if (!controller.signal.aborted) console.error(error); })
-      .finally(() => { if (!controller.signal.aborted) setSnapshotLoading(false); });
-    return () => controller.abort();
-  }, [ticker]);
+  const polling = useMarketPolling([ticker]);
+  const snapshot = polling.quotes[ticker];
+  const snapshotLoading = polling.loading;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -121,6 +113,7 @@ export function StockDetailPanel({ ticker }: Props) {
         </div>
 
         <div className="flex items-center gap-4">
+          <div className="mb-1"><QuoteStatus state={polling} /></div>
           {snapshotLoading ? (
             <Skeleton className="h-6 w-36" />
           ) : displayPrice ? (
