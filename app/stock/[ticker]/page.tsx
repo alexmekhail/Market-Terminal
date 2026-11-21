@@ -1,15 +1,14 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
-import { alpacaSocket } from '@/lib/alpacaSocket';
 import { StockChart } from '@/components/StockChart';
 import { NewsPanel } from '@/components/NewsPanel';
 import { PriceDisplay } from '@/components/PriceDisplay';
 import { Skeleton } from '@/components/Skeleton';
 import { StockInsights } from '@/components/StockInsights';
 import { useAuth } from '@/components/AuthProvider';
-import type { QuoteUpdate, Snapshot, ChartDataPoint, TimeRange } from '@/types';
+import type { Snapshot, ChartDataPoint, TimeRange } from '@/types';
 import { isPositiveChange, formatVolume, formatPrice } from '@/lib/utils';
 
 const RANGES: TimeRange[] = ['1D', '1W', '1M'];
@@ -20,65 +19,51 @@ export default function StockPage() {
   const { user } = useAuth();
 
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [livePrice, setLivePrice] = useState<{ price: number; change: number; changePercent: number } | null>(null);
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
   const [chartLoading, setChartLoading] = useState(true);
   const [range, setRange] = useState<TimeRange>('1D');
   const [snapshotLoading, setSnapshotLoading] = useState(true);
   const [inWatchlist, setInWatchlist] = useState(false);
   const [watchlistLoading, setWatchlistLoading] = useState(false);
-  const callbackRef = useRef<((u: QuoteUpdate) => void) | null>(null);
 
-  // Fetch snapshot (initial price data + prev close for WebSocket calc)
+  // Fetch the current quote snapshot
   useEffect(() => {
+    const controller = new AbortController();
+    setSnapshot(null);
     setSnapshotLoading(true);
-    fetch(`/api/stock/${ticker}/snapshot`)
-      .then((r) => r.json())
-      .then((d) => {
-        const snap: Snapshot = d.snapshot;
-        if (snap) {
-          setSnapshot(snap);
-          setLivePrice({ price: snap.price, change: snap.change, changePercent: snap.changePercent });
-          alpacaSocket.setPrevClose(ticker, snap.prevClose);
-        }
-      })
-      .catch(console.error)
-      .finally(() => setSnapshotLoading(false));
+    fetch(`/api/stock/${encodeURIComponent(ticker)}/snapshot`, { signal: controller.signal })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Snapshot unavailable')))
+      .then((data) => { if (!controller.signal.aborted) setSnapshot(data.snapshot ?? null); })
+      .catch((error) => { if (!controller.signal.aborted) console.error(error); })
+      .finally(() => { if (!controller.signal.aborted) setSnapshotLoading(false); });
+    return () => controller.abort();
   }, [ticker]);
 
-  // WebSocket live price
   useEffect(() => {
-    const cb = (update: QuoteUpdate) => {
-      setLivePrice({ price: update.price, change: update.change, changePercent: update.changePercent });
-    };
-    callbackRef.current = cb;
-    alpacaSocket.subscribe(ticker, cb);
-
-    return () => {
-      if (callbackRef.current) alpacaSocket.unsubscribe(ticker, callbackRef.current);
-    };
-  }, [ticker]);
-
-  // Fetch chart data when range changes
-  useEffect(() => {
+    const controller = new AbortController();
     setChartLoading(true);
-    fetch(`/api/stock/${ticker}/bars?range=${range}`)
+    fetch(`/api/stock/${encodeURIComponent(ticker)}/bars?range=${range}`, { signal: controller.signal })
       .then((r) => r.json())
-      .then((d) => setChartData(d.chartData ?? []))
-      .catch(console.error)
-      .finally(() => setChartLoading(false));
+      .then((d) => { if (!controller.signal.aborted) setChartData(d.chartData ?? []); })
+      .catch((error) => { if (!controller.signal.aborted) console.error(error); })
+      .finally(() => { if (!controller.signal.aborted) setChartLoading(false); });
+    return () => controller.abort();
   }, [ticker, range]);
 
   // Check watchlist status
   useEffect(() => {
+    setInWatchlist(false);
     if (!user) return;
-    fetch('/api/watchlist')
+    const controller = new AbortController();
+    fetch('/api/watchlist', { signal: controller.signal })
       .then((r) => r.json())
       .then((d) => {
+        if (controller.signal.aborted) return;
         const list = d.watchlist ?? [];
         setInWatchlist(list.some((item: { ticker: string }) => item.ticker === ticker));
       })
-      .catch(console.error);
+      .catch((error) => { if (!controller.signal.aborted) console.error(error); });
+    return () => controller.abort();
   }, [ticker, user]);
 
   async function toggleWatchlist() {
@@ -86,15 +71,15 @@ export default function StockPage() {
     setWatchlistLoading(true);
     try {
       if (inWatchlist) {
-        await fetch(`/api/watchlist?ticker=${ticker}`, { method: 'DELETE' });
-        setInWatchlist(false);
+        const response = await fetch(`/api/watchlist?ticker=${encodeURIComponent(ticker)}`, { method: 'DELETE' });
+        if (response.ok) setInWatchlist(false);
       } else {
-        await fetch('/api/watchlist', {
+        const response = await fetch('/api/watchlist', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ticker }),
         });
-        setInWatchlist(true);
+        if (response.ok) setInWatchlist(true);
       }
     } catch (e) {
       console.error(e);
@@ -103,7 +88,7 @@ export default function StockPage() {
     }
   }
 
-  const displayPrice = livePrice ?? (snapshot ? { price: snapshot.price, change: snapshot.change, changePercent: snapshot.changePercent } : null);
+  const displayPrice = snapshot?.ticker === ticker ? snapshot : null;
   const positive = displayPrice ? isPositiveChange(displayPrice.change) : true;
 
   return (

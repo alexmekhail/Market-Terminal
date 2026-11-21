@@ -1,6 +1,6 @@
 # Market Terminal
 
-Market Terminal is a web dashboard for following equities and selected USD crypto pairs. It combines historical and current market data with live equity trades, then uses those prices to put a personal watchlist and portfolio in context. The application batches quote requests, shares a streaming connection across components, and keeps each user's saved data separate with database policies.
+Market Terminal is a web dashboard for following equities and selected USD crypto pairs. It combines historical market data and quote snapshots to put a personal watchlist and portfolio in context. The application batches quote requests and keeps each user's saved data separate with database policies.
 
 [Live demo](https://market-terminal-dashboard.vercel.app/) · [Dashboard screenshot](public/screenshot.png)
 
@@ -12,7 +12,7 @@ Market Terminal is a web dashboard for following equities and selected USD crypt
 - **Instrument details.** Stock and crypto charts with 1D, 1W, and 1M ranges. Equity details include price and volume statistics, ticker-specific news, and optional Claude analysis.
 - **Symbol search.** Find instruments by symbol or name within the bundled universe of stocks, ETFs, and crypto pairs.
 - **Watchlist and portfolio.** Sign in with email and password to add or remove watchlist symbols and record, edit, or remove positions. The portfolio computes unrealized profit and loss from tracked prices and user-entered cost basis.
-- **Two quote paths.** Alpaca REST snapshots provide initial prices and historical bars. With optional streaming configured, IEX equity trades update subscribed widgets. Crypto prices and charts use REST.
+- **Market data.** Alpaca REST provides equity and crypto snapshots and historical bars. Equity widgets show a snapshot fetched when the view or instrument loads.
 
 ## Tech stack
 
@@ -20,7 +20,7 @@ Market Terminal is a web dashboard for following equities and selected USD crypt
 | --- | --- |
 | Next.js 15, React 19, TypeScript | App Router pages, route handlers, typed data models, and client state |
 | Tailwind CSS and Lightweight Charts | Dashboard layout and historical price charts |
-| Alpaca Market Data | REST snapshots, historical bars, news, and IEX equity trade streaming |
+| Alpaca Market Data | REST snapshots, historical bars, and news |
 | Supabase Auth and PostgreSQL | Email/password sessions and per-user watchlist and portfolio storage |
 | Anthropic Claude | Optional structured stock analysis |
 | Vercel and GitHub Actions | Hosting and a workflow that type-checks pull requests and builds and deploys pushes to main |
@@ -34,7 +34,6 @@ flowchart LR
     Auth["Supabase Auth"]
     DB["Supabase Postgres · RLS"]
     REST["Alpaca REST"]
-    WS["Alpaca IEX WebSocket"]
     AI["Anthropic Messages API"]
 
     UI -->|"Snapshots, bars, news, insights"| API
@@ -44,10 +43,9 @@ flowchart LR
     API -->|"Query with user session"| DB
     API -->|"Server-side credentials"| REST
     API -->|"Server-side credentials"| AI
-    UI -.->|"Optional direct equity trade stream · public credentials"| WS
 ```
 
-Pages and route handlers live in [`app/`](app/). [`lib/alpaca.ts`](lib/alpaca.ts) fetches REST data and normalizes snapshots for the UI. [`lib/alpacaSocket.ts`](lib/alpacaSocket.ts) tracks per-symbol subscriptions and reconnects after disconnections. [`middleware.ts`](middleware.ts) refreshes Supabase sessions, and the private route handlers verify the user before querying tables protected by [row-level security](supabase-schema.sql).
+Pages and route handlers live in [`app/`](app/). [`lib/alpaca.ts`](lib/alpaca.ts) fetches REST data and normalizes snapshots for the UI. [`middleware.ts`](middleware.ts) refreshes Supabase sessions, and the private route handlers verify the user before querying tables protected by [row-level security](supabase-schema.sql).
 
 ## Getting started
 
@@ -67,7 +65,6 @@ Configure `.env.local` using the checked-in [template](.env.local.example).
 | `ALPACA_API_KEY`, `ALPACA_API_SECRET` | Server only. Required for Alpaca REST requests. |
 | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Public Supabase project URL and anon key. Required for authentication and saved data. |
 | `ANTHROPIC_API_KEY` | Optional and server only. Enables Claude analysis. The insights route returns fallback content if omitted. |
-| `NEXT_PUBLIC_ALPACA_API_KEY`, `NEXT_PUBLIC_ALPACA_API_SECRET` | Optional legacy streaming configuration. Leave both blank for snapshot-only quotes. Any credential pair set here is public. |
 
 1. Enable the email/password provider in Supabase. Run [`supabase-schema.sql`](supabase-schema.sql) once in the SQL Editor of your development project to create the tables and policies. If email confirmation is enabled, configure the Supabase Site URL and confirm the account before signing in.
 2. Run `npm run dev` and open [localhost:3000](http://localhost:3000).
@@ -79,23 +76,36 @@ Preview deployments can build without Supabase credentials. Configure the public
 
 - REST credentials and the Anthropic key belong in server-only environment variables. Store local values in the ignored `.env.local` file and configure hosted values through your deployment environment.
 - The watchlist and portfolio APIs verify the current user with Supabase Auth. Row-level security restricts access to rows owned by that user. The application uses the Supabase anon key with the user's session.
-- **Direct Alpaca streaming exposes the configured key and secret to every browser.** Use the REST-only configuration for public deployments until streaming credentials can be held server-side. Treat any credential previously shipped in a public build as exposed and rotate it through Alpaca. Changes to public environment variables require a new build.
-- Public market-data and AI routes use provider quotas. The AI route validates inputs and model output, bounds its per-process cache and concurrency, and limits successful refreshes for each ticker to one per minute. Cached results are returned only for matching inputs. A public deployment still needs shared rate limits and a provider budget.
+- The retired browser stream sent an Alpaca key and secret from browser JavaScript. Treat any pair shipped that way as exposed. Rotate it through Alpaca and remove the legacy `NEXT_PUBLIC_ALPACA_API_KEY` and `NEXT_PUBLIC_ALPACA_API_SECRET` settings. This release reads Alpaca credentials only on the server.
+- Watchlist and portfolio queries filter by the verified user's ID, and writes derive row ownership from that identity. The protected routes return `401` when session verification fails and `503` when Supabase is unconfigured. The SQL policies also enforce ownership at the database.
+- AI Insights allows up to 60 provider attempts per minute and eight in flight per application instance. Matching cached results can still be served when the provider quota is exhausted. Instances and cold starts have independent budgets, so these limits provide no account-wide spending guarantee. A coordinated limit would require a shared store such as Redis, provider spend limits, and a policy for caller quotas and server-sourced metrics.
+
+## Streaming and deployment limits
+
+The application uses REST snapshots. It has no browser connection to Alpaca, and quote widgets refresh when loaded. A future streaming option would use a long-lived relay with one upstream connection per feed and keep provider credentials on that service. The relay could fan out normalized quotes over authenticated SSE or WebSockets, enforce subscription limits, and perform upstream reconnects with jitter, resubscription, and offline handling. That design needs hosting and authorization decisions before implementation.
 
 ## Engineering challenges
 
-- **Snapshot and stream coordination.** Batched REST requests seed current prices and previous closes. The shared socket fans out IEX trades to subscribed widgets and calculates price changes against the previous close. Reconnects use capped backoff and restore active subscriptions.
+- **Snapshot lifecycle.** Batched REST requests supply quote widgets. Effects cancel outdated requests on navigation or account changes.
 - **Market data presentation.** The treemap groups curated symbols by sector and separates tile sizing from return-based coloring. The chart layer transforms historical data into time-ordered price series, and the equity 1D view selects the most recent day represented in the returned bars.
-- **Provider cost and latency.** News requests use a five-minute revalidation window. The AI panel starts when price data becomes available and supports manual refresh. Individual trade ticks no longer request new analysis. The route applies a response timeout and falls back when the provider fails or returns an invalid result.
+- **Provider cost and latency.** News requests use a five-minute revalidation window. The AI panel starts when price data becomes available and supports manual refresh. The route applies a response timeout and falls back when the provider fails or returns an invalid result.
 
 ## Testing
 
 ```bash
+npm test
 npm run lint
 npx tsc --noEmit
 npm run build
+npm audit
 ```
 
-ESLint checks the Next.js and React code. TypeScript checks the source without emitting JavaScript. The production build checks compilation and route generation. This repository has no automated unit or integration suite.
+The Node tests exercise route handlers with mocked Supabase and Anthropic responses. They cover session rejection, user scoping, malformed input, AI cooldown and cache expiry, concurrent duplicate requests, and provider fallback.
 
-For a manual smoke test, load the dashboard with streaming disabled, open an equity and a crypto chart, then sign in and add and remove a watchlist entry and a portfolio position. Use two development accounts to verify that each sees only its own saved rows. With a disposable development streaming configuration, verify that equity widgets resume updating after a network interruption.
+To run the database policy fixture, use a fresh disposable PostgreSQL database with a role that can create schemas and roles. The script applies the repository schema, exercises row-level security with two synthetic identities, and rolls back.
+
+```bash
+psql -X --dbname market_terminal_disposable --file tests/rls.sql
+```
+
+The fixture models Supabase's authenticated role and `auth.uid()`. For hosted verification, use two accounts in a separate Supabase test project to confirm token expiration, auth callbacks, and cross-account access. To smoke-test market data manually, open an equity and a crypto chart with development Alpaca credentials.

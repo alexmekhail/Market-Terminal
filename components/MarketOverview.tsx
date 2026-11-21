@@ -1,9 +1,8 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { alpacaSocket } from '@/lib/alpacaSocket';
-import type { Snapshot, QuoteUpdate } from '@/types';
+import type { Snapshot } from '@/types';
 import { formatPrice, formatChangePercent, isPositiveChange } from '@/lib/utils';
 import { Skeleton } from './Skeleton';
 
@@ -24,52 +23,19 @@ const SECTORS = [
 
 const ALL_SYMBOLS = [...INDICES.map((i) => i.id), ...SECTORS.map((s) => s.id)];
 
-interface LiveData {
-  price: number;
-  change: number;
-  changePercent: number;
-}
-
 export function MarketOverview() {
-  const [data, setData] = useState<Record<string, LiveData>>({});
+  const [data, setData] = useState<Record<string, Snapshot>>({});
   const [loading, setLoading] = useState(true);
-  const callbacksRef = useRef<Map<string, (u: QuoteUpdate) => void>>(new Map());
-
-  const subscribe = useCallback((snapshots: Record<string, Snapshot>) => {
-    callbacksRef.current.forEach((cb, t) => alpacaSocket.unsubscribe(t, cb));
-    callbacksRef.current.clear();
-
-    const initial: Record<string, LiveData> = {};
-    for (const [ticker, snap] of Object.entries(snapshots)) {
-      initial[ticker] = { price: snap.price, change: snap.change, changePercent: snap.changePercent };
-      alpacaSocket.setPrevClose(ticker, snap.prevClose);
-    }
-    setData(initial);
-
-    ALL_SYMBOLS.forEach((ticker) => {
-      const cb = (update: QuoteUpdate) => {
-        setData((prev) => ({
-          ...prev,
-          [ticker]: { price: update.price, change: update.change, changePercent: update.changePercent },
-        }));
-      };
-      callbacksRef.current.set(ticker, cb);
-      alpacaSocket.subscribe(ticker, cb);
-    });
-  }, []);
 
   useEffect(() => {
-    fetch(`/api/snapshots?symbols=${ALL_SYMBOLS.join(',')}`)
-      .then((r) => r.json())
-      .then((snaps: Record<string, Snapshot>) => subscribe(snaps))
-      .catch(console.error)
-      .finally(() => setLoading(false));
-
-    return () => {
-      callbacksRef.current.forEach((cb, t) => alpacaSocket.unsubscribe(t, cb));
-      callbacksRef.current.clear();
-    };
-  }, [subscribe]);
+    const controller = new AbortController();
+    fetch(`/api/snapshots?symbols=${ALL_SYMBOLS.join(',')}`, { signal: controller.signal })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Snapshots unavailable')))
+      .then((snapshots) => { if (!controller.signal.aborted) setData(snapshots); })
+      .catch((error) => { if (!controller.signal.aborted) console.error(error); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, []);
 
   return (
     <div className="border border-border rounded overflow-hidden h-full">

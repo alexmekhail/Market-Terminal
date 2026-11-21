@@ -38,6 +38,9 @@ const pending = new Set<string>();
 const CACHE_TTL_MS = 60_000;
 const MAX_CACHE_ENTRIES = 256;
 const MAX_PENDING = 8;
+const MAX_PROVIDER_CALLS_PER_MINUTE = 60;
+let budgetResetAt = 0;
+let providerCalls = 0;
 const TICKER_PATTERN = /^[A-Z0-9][A-Z0-9.:-]{0,15}$/;
 const METRICS = ['price', 'changePercent', 'volume', 'open', 'high', 'low', 'prevClose'] as const;
 
@@ -56,8 +59,8 @@ function isInsightResult(value: unknown): value is InsightResult {
     && ['Bullish', 'Neutral', 'Bearish'].some((sentiment) => sentiment === result.sentiment)
     && typeof result.confidence === 'number' && result.confidence >= 0 && result.confidence <= 100
     && Array.isArray(result.reasons) && result.reasons.length === 4
-    && result.reasons.every((reason: unknown) => typeof reason === 'string' && reason.trim().length > 0)
-    && typeof result.summary === 'string' && result.summary.trim().length > 0;
+    && result.reasons.every((reason: unknown) => typeof reason === 'string' && reason.trim().length > 0 && reason.length <= 80)
+    && typeof result.summary === 'string' && result.summary.trim().length > 0 && result.summary.length <= 120;
 }
 
 const SYSTEM_PROMPT = `You are a quantitative stock analyst. Given stock metrics, produce a structured JSON analysis.
@@ -105,6 +108,17 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  if (now >= budgetResetAt) {
+    budgetResetAt = now + CACHE_TTL_MS;
+    providerCalls = 0;
+  }
+  if (providerCalls >= MAX_PROVIDER_CALLS_PER_MINUTE) {
+    return NextResponse.json(
+      { error: 'Analysis quota reached. Try again shortly.' },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil((budgetResetAt - now) / 1000)) } }
+    );
+  }
+
   const intradayPosition =
     body.high !== body.low
       ? `${(((body.price - body.low) / (body.high - body.low)) * 100).toFixed(0)}% of intraday range`
@@ -127,6 +141,7 @@ Previous Close: $${body.prevClose}
 Price vs Open: ${priceVsOpen}
 Intraday Range Position: ${intradayPosition}`;
 
+  providerCalls += 1;
   pending.add(ticker);
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {

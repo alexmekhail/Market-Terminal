@@ -1,10 +1,9 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from './AuthProvider';
-import { alpacaSocket } from '@/lib/alpacaSocket';
 import { AddPositionModal } from './AddPositionModal';
-import type { PortfolioPosition, QuoteUpdate, Snapshot } from '@/types';
+import type { PortfolioPosition, Snapshot } from '@/types';
 import { formatPrice, formatLargeNumber, isPositiveChange } from '@/lib/utils';
 import { Skeleton } from './Skeleton';
 
@@ -17,72 +16,58 @@ interface EnrichedPosition extends PortfolioPosition {
 
 export function PortfolioTable() {
   const { user } = useAuth();
+  return <PortfolioTableContent key={user?.id ?? 'anonymous'} userId={user?.id} />;
+}
+
+function PortfolioTableContent({ userId }: { userId?: string }) {
   const [positions, setPositions] = useState<EnrichedPosition[]>([]);
-  const [prices, setPrices] = useState<Record<string, number>>({});
+  const [prices, setPrices] = useState<Record<string, Snapshot>>({});
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
-  const callbacksRef = useRef<Map<string, (u: QuoteUpdate) => void>>(new Map());
-
-  const subscribeToTickers = useCallback((tickers: string[]) => {
-    callbacksRef.current.forEach((cb, t) => alpacaSocket.unsubscribe(t, cb));
-    callbacksRef.current.clear();
-
-    if (tickers.length > 0) {
-      fetch(`/api/snapshots?symbols=${tickers.join(',')}`)
-        .then((r) => r.json())
-        .then((data: Record<string, Snapshot>) => {
-          const initial: Record<string, number> = {};
-          for (const [ticker, snap] of Object.entries(data)) {
-            initial[ticker] = snap.price;
-            alpacaSocket.setPrevClose(ticker, snap.prevClose);
-          }
-          setPrices((prev) => ({ ...prev, ...initial }));
-        })
-        .catch(console.error);
-    }
-
-    tickers.forEach((ticker) => {
-      const cb = (update: QuoteUpdate) => {
-        setPrices((prev) => ({ ...prev, [ticker]: update.price }));
-      };
-      callbacksRef.current.set(ticker, cb);
-      alpacaSocket.subscribe(ticker, cb);
-    });
-  }, []);
-
-  const loadPositions = useCallback(async () => {
-    if (!user) { setLoading(false); return; }
-    try {
-      const r = await fetch('/api/portfolio');
-      const d = await r.json();
-      const list: PortfolioPosition[] = d.positions ?? [];
-      setPositions(list);
-      subscribeToTickers(list.map((p) => p.ticker));
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  }, [user, subscribeToTickers]);
+  const [refresh, setRefresh] = useState(0);
 
   useEffect(() => {
-    loadPositions();
-    return () => {
-      callbacksRef.current.forEach((cb, t) => alpacaSocket.unsubscribe(t, cb));
-      callbacksRef.current.clear();
-    };
-  }, [loadPositions]);
+    setPositions([]);
+    setPrices({});
+    setLoading(Boolean(userId));
+    if (!userId) return;
+    const controller = new AbortController();
+    const { signal } = controller;
 
-  async function deletePosition(id: string, ticker: string) {
-    await fetch(`/api/portfolio?id=${id}`, { method: 'DELETE' });
-    setPositions((prev) => prev.filter((p) => p.id !== id));
-    const cb = callbacksRef.current.get(ticker);
-    if (cb) { alpacaSocket.unsubscribe(ticker, cb); callbacksRef.current.delete(ticker); }
+    async function load() {
+      try {
+        const response = await fetch('/api/portfolio', { signal });
+        if (!response.ok) return;
+        const data = await response.json();
+        const list: PortfolioPosition[] = data.positions ?? [];
+        if (signal.aborted) return;
+        setPositions(list);
+        if (!list.length) return;
+        const symbols = new URLSearchParams({ symbols: list.map((item) => item.ticker).join(',') });
+        const snapshots = await fetch(`/api/snapshots?${symbols}`, { signal });
+        if (snapshots.ok) {
+          const quotes = await snapshots.json();
+          if (!signal.aborted) setPrices(quotes);
+        }
+      } catch (error) {
+        if (!signal.aborted) console.error(error);
+      } finally {
+        if (!signal.aborted) setLoading(false);
+      }
+    }
+
+    void load();
+    return () => controller.abort();
+  }, [userId, refresh]);
+
+  async function deletePosition(id: string) {
+    const response = await fetch(`/api/portfolio?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    if (response.ok) setPositions((previous) => previous.filter((position) => position.id !== id));
   }
 
-  // Enrich positions with live prices
+  // Enrich positions with snapshot prices
   const enriched: EnrichedPosition[] = positions.map((pos) => {
-    const currentPrice = prices[pos.ticker];
+    const currentPrice = prices[pos.ticker]?.price;
     if (currentPrice === undefined) return pos;
     const currentValue = currentPrice * pos.shares;
     const costBasis = pos.avg_buy_price * pos.shares;
@@ -94,7 +79,7 @@ export function PortfolioTable() {
   const totalValue = enriched.reduce((sum, p) => sum + (p.currentValue ?? 0), 0);
   const totalGainLoss = enriched.reduce((sum, p) => sum + (p.gainLoss ?? 0), 0);
 
-  if (!user) {
+  if (!userId) {
     return (
       <div className="border border-border rounded p-4 text-center">
         <p className="text-text-muted text-xs font-mono">Sign in to track your portfolio</p>
@@ -177,7 +162,7 @@ export function PortfolioTable() {
                       </td>
                       <td className="px-2 py-3 text-right">
                         <button
-                          onClick={() => deletePosition(pos.id, pos.ticker)}
+                          onClick={() => deletePosition(pos.id)}
                           className="text-text-muted hover:text-loss opacity-0 group-hover:opacity-100 transition-all text-base leading-none"
                           title="Remove"
                         >
@@ -196,7 +181,7 @@ export function PortfolioTable() {
       {showModal && (
         <AddPositionModal
           onClose={() => setShowModal(false)}
-          onSuccess={loadPositions}
+          onSuccess={() => setRefresh((value) => value + 1)}
         />
       )}
     </>
